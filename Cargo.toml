@@ -1,0 +1,17 @@
+[package]
+name = "ce-test"
+version = "0.1.0"
+edition = "2021"
+description = "The CE testing harness: spin ephemeral chain-free nodes, run modules, drive direct module<->module mesh communication, assert, and tear down — the foundation of `ce test` (PLAN/ce-testing-framework.md)."
+license = "AGPL-3.0-only"
+
+[lib]
+name = "ce_test"
+path = "src/lib.rs"
+
+[dependencies]
+ce-rs = { git = "https://github.com/ce-net/ce-rs", features = ["serve"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "net", "sync"] }
+anyhow = "1"
+
+[dev-dependencies]
