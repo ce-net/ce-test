@@ -2,9 +2,10 @@
 //!
 //! Spin ephemeral, **chain-free** (`--no-economy`) nodes, run modules on them, drive **direct
 //! module↔module** communication over the mesh, assert, and tear down automatically. This is the
-//! foundation of `ce test`; v1 covers the common case — co-located modules talking over one node's
-//! Bus (the self-request path, deterministic, no peering). Next: multi-node peering, `ce app install`,
-//! and `h.arduino(alias)` (a real board, with an emulated-board fallback for CI).
+//! foundation of `ce test`. Two topologies today: co-located modules over one node's Bus
+//! (`h.node()`, the self-request path — deterministic, no peering), and **cross-node over real
+//! libp2p** (`h.peer_of(seed)` dials the seed directly; no relay, no mDNS). Next: `ce app install`
+//! in the harness and `h.arduino(alias)` (a real board, with an emulated-board fallback for CI).
 //!
 //! ```no_run
 //! # async fn demo() -> anyhow::Result<()> {
@@ -49,6 +50,19 @@ impl Harness {
     /// `CE_NO_AUTOBOOTSTRAP=1`, its own temp data-dir + free ports) and wait until its API is live.
     /// Killed + wiped when the harness drops.
     pub async fn node(&mut self) -> Result<TestNode> {
+        self.spawn(None).await
+    }
+
+    /// Spin a second node that dials `seed` **directly** and joins its isolated mesh — no relay, no
+    /// mDNS, no bootstrap of the real network. Use this for T3 comms tests where module A on one node
+    /// drives module B on another over real libp2p (the transparency invariant, cross-node).
+    pub async fn peer_of(&mut self, seed: &TestNode) -> Result<TestNode> {
+        let addr = seed.dial_addr();
+        self.spawn(Some(&addr)).await
+    }
+
+    /// Spawn a `--no-economy` node, optionally `--bootstrap`ped at `dial` (a `/ip4/…/p2p/…` addr).
+    async fn spawn(&mut self, dial: Option<&str>) -> Result<TestNode> {
         let idx = self.guards.len();
         let data_dir = std::env::temp_dir().join(format!("ce-test-{}-{idx}", std::process::id()));
         let _ = std::fs::remove_dir_all(&data_dir);
@@ -56,20 +70,26 @@ impl Harness {
         let api_port = free_port()?;
         let p2p_port = free_port()?;
 
+        // `--data-dir` is a GLOBAL flag (before the subcommand); `--api-port`/`--port` are `start` flags.
+        let mut args: Vec<String> = vec![
+            "--data-dir".into(),
+            data_dir.to_str().unwrap().into(),
+            "start".into(),
+            "--no-economy".into(),
+            "--foreground".into(),
+            "--no-mdns".into(),
+            "--api-port".into(),
+            api_port.to_string(),
+            "--port".into(),
+            p2p_port.to_string(),
+        ];
+        if let Some(d) = dial {
+            args.push("--bootstrap".into());
+            args.push(d.into());
+        }
+
         let child = Command::new(&self.ce_bin)
-            // `--data-dir` is a GLOBAL flag (before the subcommand); `--api-port`/`--port` are `start` flags.
-            .args([
-                "--data-dir",
-                data_dir.to_str().unwrap(),
-                "start",
-                "--no-economy",
-                "--foreground",
-                "--no-mdns",
-                "--api-port",
-                &api_port.to_string(),
-                "--port",
-                &p2p_port.to_string(),
-            ])
+            .args(&args)
             .env("CE_NO_AUTOBOOTSTRAP", "1") // isolated: do not join the real mesh
             .env("TMPDIR", "/tmp")
             .stdout(Stdio::null())
@@ -81,10 +101,11 @@ impl Harness {
 
         let api = format!("http://127.0.0.1:{api_port}");
         let token = wait_for_token(&data_dir).await.context("node never wrote api.token")?;
-        let client = CeClient::with_token(api.clone(), Some(token));
+        let client = CeClient::with_token(api.clone(), Some(token.clone()));
         wait_for_health(&client).await.context("node API never became healthy")?;
         let node_id = client.status().await.context("node /status failed")?.node_id;
-        Ok(TestNode { client, node_id, api })
+        let peer_id = fetch_peer_id(&api, &token).await.context("read peer id from /bootstrap")?;
+        Ok(TestNode { client, node_id, api, peer_id, p2p_port })
     }
 
     /// Poll `cond` every 100ms until it is true or `timeout` elapses.
@@ -109,9 +130,19 @@ pub struct TestNode {
     pub client: CeClient,
     pub node_id: String,
     pub api: String,
+    /// The node's libp2p PeerId (read off `GET /bootstrap`) — distinct from `node_id` (the Ed25519
+    /// CE identity). Used to build a peer's dial address.
+    pub peer_id: String,
+    /// The libp2p listen port this node was assigned.
+    pub p2p_port: u16,
 }
 
 impl TestNode {
+    /// The multiaddr another node can `--bootstrap` to dial this one directly on loopback.
+    pub fn dial_addr(&self) -> String {
+        format!("/ip4/127.0.0.1/tcp/{}/p2p/{}", self.p2p_port, self.peer_id)
+    }
+
     /// Drive a directed mesh request to `to` on `topic`; returns the reply bytes.
     pub async fn request(&self, to: &str, topic: &str, payload: &[u8], timeout_ms: u64) -> Result<Vec<u8>> {
         self.client.request(to, topic, payload, timeout_ms).await
@@ -198,6 +229,23 @@ async fn wait_for_token(data_dir: &std::path::Path) -> Result<String> {
     Err(anyhow!("no api.token at {}", path.display()))
 }
 
+/// Read the node's libp2p PeerId off `GET /bootstrap` (shape `{"peers":["/p2p/<id>"]}`). The
+/// listen addr is added by the harness (it knows the port); only the identity comes from here.
+async fn fetch_peer_id(api: &str, token: &str) -> Result<String> {
+    let v: serde_json::Value = reqwest::Client::new()
+        .get(format!("{api}/bootstrap"))
+        .bearer_auth(token)
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    let addr = v["peers"][0]
+        .as_str()
+        .ok_or_else(|| anyhow!("no peers[0] in /bootstrap: {v}"))?;
+    Ok(addr.rsplit("/p2p/").next().unwrap_or(addr).to_string())
+}
+
 /// Wait (up to ~30s) for `GET /health` to succeed.
 async fn wait_for_health(client: &CeClient) -> Result<()> {
     for _ in 0..300 {
@@ -231,5 +279,29 @@ mod tests {
             .await
             .expect("request");
         assert_eq!(reply, b"round-trip");
+    }
+
+    // T3 (cross-node module↔module): module B runs on node `dev`, module A on node `hub` drives it
+    // over REAL libp2p (hub dials dev directly, no relay, no mDNS). This is the transparency invariant
+    // across the wire — the same `request`/`responder` code as the co-located case, now over the mesh.
+    //   cargo test -p ce-test -- --ignored
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[ignore = "spawns two real `ce` nodes; run explicitly with --ignored"]
+    async fn cross_node_request_over_the_mesh() {
+        let mut h = Harness::new();
+        let dev = h.node().await.expect("seed node");
+        let hub = h.peer_of(&dev).await.expect("peer node dialing the seed");
+        let _echo = dev.responder("test/echo", |mut p| {
+            p.extend_from_slice(b"-pong");
+            p
+        });
+        // let the direct connection settle + the serve loop subscribe on `dev`.
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        // module A (on hub) drives module B (on dev) across the wire, addressed by dev's node_id:
+        let reply = hub
+            .request(&dev.node_id, "test/echo", b"ping", 10_000)
+            .await
+            .expect("cross-node request");
+        assert_eq!(reply, b"ping-pong");
     }
 }

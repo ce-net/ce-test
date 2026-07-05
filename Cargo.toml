@@ -13,5 +13,8 @@ path = "src/lib.rs"
 ce-rs = { git = "https://github.com/ce-net/ce-rs", features = ["serve"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "net", "sync"] }
 anyhow = "1"
+# For reading a seed node's libp2p PeerId off GET /bootstrap (to construct a peer's dial multiaddr).
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde_json = "1"
 
 [dev-dependencies]
