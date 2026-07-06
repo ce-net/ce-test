@@ -113,10 +113,17 @@ where = "local"      # local now; fleet | org:x | node:<id> | relay (placement �
 
 ```bash
 ce-test list                          # the catalog
+ce-test list --json                   # the catalog, machine-readable
 ce-test run                           # all suites, report PASS/FAIL/SKIP
 ce-test run --suite my-comms          # one suite
 ce-test run --tier T3 --on fleet=mine # a tier, across the fleet (distributed exec: see GUIDE §7)
+ce-test run --json                    # machine-readable results for CI (see below)
 ```
+
+`--json` emits `{ "suites": [ { name, tier, passed, skipped, secs, note } ], "summary": { total,
+passed, failed, skipped } }` on stdout (child test output is captured, so stdout stays pure JSON — a
+tail of a failing suite's output lands in its `note`); the process still exits non-zero on any failure.
+Gate CI on `summary.failed == 0`.
 
 Placement is **declared** (`where` / `--on`), never coded — you never name a machine. `where != local`
 runs over the mesh via the core ce-net distributed-run capability; `ce-test` does not build its own

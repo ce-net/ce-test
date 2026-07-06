@@ -48,7 +48,9 @@ to, topic, payload, timeout_ms)`, `remote.request(topic, payload, timeout_ms)` /
 spawns nothing). Node-spawning + fleet tests are `#[ignore]` and skip cleanly with no fleet in reach.
 
 ## The CLI + cetest.toml
-A repo-root `cetest.toml` catalogs suites; `ce-test [run|list] [--suite|--tier|--on]` runs them.
+A repo-root `cetest.toml` catalogs suites; `ce-test [run|list] [--suite|--tier|--on] [--json]` runs them.
+`--json` emits machine-readable results (`{suites,summary}`) on a pure-JSON stdout for CI (gate on
+`summary.failed == 0`); child output is captured, with a tail of any failure in its `note`.
 `where = local | fleet | org:x | node:<id> | relay` per suite (or `--on <target>`) declares placement —
 **no machine names**. `local` is wired; non-local runs over the mesh via the **core ce-net distributed-
 run capability** — ce-test does NOT build its own distribution.

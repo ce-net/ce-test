@@ -12,11 +12,16 @@
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+use serde::Serialize;
+
 use crate::config::{Config, Suite};
 
 /// Outcome of one suite.
+#[derive(Serialize)]
 pub struct SuiteResult {
     pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tier: Option<String>,
     pub passed: bool,
     pub skipped: bool,
     pub secs: f64,
@@ -38,6 +43,20 @@ impl Report {
     pub fn skipped(&self) -> usize {
         self.results.iter().filter(|r| r.skipped).count()
     }
+
+    /// A machine-readable view for CI (`ce-test run --json`): `{ "suites": [...], "summary": {...} }`.
+    /// Stable field names so a downstream tool can gate on `summary.failed == 0`.
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "suites": self.results,
+            "summary": {
+                "total": self.results.len(),
+                "passed": self.passed(),
+                "failed": self.failed(),
+                "skipped": self.skipped(),
+            }
+        })
+    }
 }
 
 /// Filters + placement override for a run.
@@ -51,13 +70,22 @@ pub struct RunOpts {
     pub on: Option<String>,
     /// Workspace root (the config's directory) — suite paths resolve against it.
     pub root: PathBuf,
+    /// Capture each suite's child output instead of streaming it live (for `--json`: keeps our stdout
+    /// pure JSON, and puts a tail of the failing output into the result note).
+    pub capture: bool,
 }
 
 /// Run the configured suites and collect a [`Report`]. Runs `tools/ce-dev-link` first if
 /// `defaults.dev_link` is set (best-effort).
 pub fn run(cfg: &Config, opts: &RunOpts) -> Report {
     if cfg.defaults.dev_link.unwrap_or(false) {
-        let _ = std::process::Command::new("tools/ce-dev-link").current_dir(&opts.root).status();
+        let mut cmd = std::process::Command::new("tools/ce-dev-link");
+        cmd.current_dir(&opts.root);
+        if opts.capture {
+            // Keep stdout pure JSON: send dev-link's chatter to stderr, not our stdout.
+            cmd.stdout(std::process::Stdio::null());
+        }
+        let _ = cmd.status();
     }
 
     let mut results = Vec::new();
@@ -80,6 +108,7 @@ pub fn run(cfg: &Config, opts: &RunOpts) -> Report {
             // Distributed placement is the designed path (see module docs); not yet wired.
             results.push(SuiteResult {
                 name: s.name.clone(),
+                tier: s.tier.clone(),
                 passed: false,
                 skipped: true,
                 secs: 0.0,
@@ -90,9 +119,10 @@ pub fn run(cfg: &Config, opts: &RunOpts) -> Report {
             continue;
         }
 
-        let (passed, note) = run_local(cfg, s, &opts.root);
+        let (passed, note) = run_local(cfg, s, &opts.root, opts.capture);
         results.push(SuiteResult {
             name: s.name.clone(),
+            tier: s.tier.clone(),
             passed,
             skipped: false,
             secs: started.elapsed().as_secs_f64(),
@@ -102,8 +132,10 @@ pub fn run(cfg: &Config, opts: &RunOpts) -> Report {
     Report { results }
 }
 
-/// Run one suite locally via `cargo test`.
-fn run_local(cfg: &Config, s: &Suite, root: &Path) -> (bool, String) {
+/// Run one suite locally via `cargo test`. When `capture`, the child's output is captured (not
+/// streamed) so `--json` keeps stdout pure JSON; a tail of the output is folded into the note on
+/// failure so CI still sees why it broke.
+fn run_local(cfg: &Config, s: &Suite, root: &Path, capture: bool) -> (bool, String) {
     let dir = root.join(&s.path);
     if !dir.exists() {
         return (false, format!("path not found: {}", dir.display()));
@@ -130,9 +162,22 @@ fn run_local(cfg: &Config, s: &Suite, root: &Path) -> (bool, String) {
         cmd.arg("--ignored");
     }
 
-    match cmd.status() {
-        Ok(st) if st.success() => (true, String::new()),
-        Ok(st) => (false, format!("cargo test exited {}", st.code().unwrap_or(-1))),
+    if !capture {
+        return match cmd.status() {
+            Ok(st) if st.success() => (true, String::new()),
+            Ok(st) => (false, format!("cargo test exited {}", st.code().unwrap_or(-1))),
+            Err(e) => (false, format!("spawn cargo failed: {e}")),
+        };
+    }
+
+    match cmd.output() {
+        Ok(out) if out.status.success() => (true, String::new()),
+        Ok(out) => {
+            let mut buf = String::from_utf8_lossy(&out.stdout).into_owned();
+            buf.push_str(&String::from_utf8_lossy(&out.stderr));
+            let tail: String = buf.lines().rev().take(12).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join(" | ");
+            (false, format!("cargo test exited {}: {tail}", out.status.code().unwrap_or(-1)))
+        }
         Err(e) => (false, format!("spawn cargo failed: {e}")),
     }
 }
