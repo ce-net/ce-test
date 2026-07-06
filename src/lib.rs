@@ -2,10 +2,12 @@
 //!
 //! Spin ephemeral, **chain-free** (`--no-economy`) nodes, run modules on them, drive **direct
 //! module↔module** communication over the mesh, assert, and tear down automatically. This is the
-//! foundation of `ce test`. Two topologies today: co-located modules over one node's Bus
-//! (`h.node()`, the self-request path — deterministic, no peering), and **cross-node over real
-//! libp2p** (`h.peer_of(seed)` dials the seed directly; no relay, no mDNS). Next: `ce app install`
-//! in the harness and `h.arduino(alias)` (a real board, with an emulated-board fallback for CI).
+//! foundation of `ce test`. Three topologies today: co-located modules over one node's Bus
+//! (`h.node()`, the self-request path — deterministic, no peering), **cross-node over real libp2p**
+//! (`h.peer_of(seed)` dials the seed directly; no relay, no mDNS), and a **board** brought up through
+//! the real onboard path (`h.arduino(alias)` — `ce_onboard::run_local`, i.e. a `ce-blueprint` plan →
+//! `ce-onboard` → a chain-free node; emulated locally, env-gated for real hardware). Next: `ce app
+//! install` in the harness.
 //!
 //! ```no_run
 //! # async fn demo() -> anyhow::Result<()> {
@@ -97,7 +99,7 @@ impl Harness {
             .spawn()
             .with_context(|| format!("spawn `{}` (set $CE_BIN?)", self.ce_bin))?;
 
-        self.guards.push(NodeGuard { child, data_dir: data_dir.clone() });
+        self.guards.push(NodeGuard { proc: Proc::Child(child), data_dir: data_dir.clone() });
 
         let api = format!("http://127.0.0.1:{api_port}");
         let token = wait_for_token(&data_dir).await.context("node never wrote api.token")?;
@@ -106,6 +108,46 @@ impl Harness {
         let node_id = client.status().await.context("node /status failed")?.node_id;
         let peer_id = fetch_peer_id(&api, &token).await.context("read peer id from /bootstrap")?;
         Ok(TestNode { client, node_id, api, peer_id, p2p_port })
+    }
+
+    /// Bring a **board** into the topology and return a handle to it. Real hardware is env-gated (a
+    /// future `CE_TEST_ARDUINO_<ALIAS>` naming a reachable node); by default — and in CI — this is an
+    /// **emulated board**: a local chain-free node brought up THROUGH the real `ce-onboard` path
+    /// (`ce_onboard::run_local`, which itself runs a `ce-blueprint` plan). So the whole chain —
+    /// blueprint → onboard → node → module comms — is exercised without hardware.
+    pub async fn arduino(&mut self, alias: &str) -> Result<TestNode> {
+        let idx = self.guards.len();
+        let data_dir = std::env::temp_dir().join(format!("ce-test-arduino-{}-{idx}-{alias}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&data_dir);
+        let api_port = free_port()?;
+        let p2p_port = free_port()?;
+
+        // Describe the emulated board as a Hosted target (the emulator runs the native binary), and
+        // onboard it through ce-onboard — the same code path a real Hosted board takes.
+        let desc: ce_blueprint::TargetDescriptor = serde_json::from_str(&format!(
+            r#"{{"name":"emulated-{alias}","arch":"native","has_os":true,"has_crypto":true}}"#
+        ))
+        .expect("valid emulated descriptor");
+        let opts = ce_onboard::OnboardOpts {
+            via: Some(ce_onboard::Via::Local),
+            org: None,
+            data_dir: Some(data_dir.to_string_lossy().into_owned()),
+        };
+        let out = ce_onboard::run_local(&self.ce_bin, &desc, &opts, api_port, p2p_port)
+            .await
+            .context("onboard emulated board via ce-onboard")?;
+
+        // ce-onboard leaves the node running and hands us its pid — own its lifetime.
+        self.guards.push(NodeGuard { proc: Proc::Pid(out.pid), data_dir: out.data_dir.clone() });
+
+        let api = format!("http://127.0.0.1:{api_port}");
+        let token = std::fs::read_to_string(out.data_dir.join("api.token"))
+            .context("read api.token of onboarded board")?
+            .trim()
+            .to_string();
+        let client = CeClient::with_token(api.clone(), Some(token.clone()));
+        let peer_id = fetch_peer_id(&api, &token).await.context("read peer id from /bootstrap")?;
+        Ok(TestNode { client, node_id: out.node_id, api, peer_id, p2p_port })
     }
 
     /// Poll `cond` every 100ms until it is true or `timeout` elapses.
@@ -194,15 +236,30 @@ impl Handler for FnHandler {
     }
 }
 
+/// A node this harness owns, killed on drop. Either a `Child` we spawned directly (`h.node()`/
+/// `peer_of()`), or a pid of a node brought up through `ce-onboard` (`h.arduino()`, which leaves the
+/// node running and hands us its pid).
+enum Proc {
+    Child(Child),
+    Pid(u32),
+}
+
 struct NodeGuard {
-    child: Child,
+    proc: Proc,
     data_dir: PathBuf,
 }
 
 impl Drop for NodeGuard {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        match &mut self.proc {
+            Proc::Child(c) => {
+                let _ = c.kill();
+                let _ = c.wait();
+            }
+            Proc::Pid(p) => {
+                let _ = std::process::Command::new("kill").arg(p.to_string()).status();
+            }
+        }
         let _ = std::fs::remove_dir_all(&self.data_dir);
     }
 }
@@ -303,5 +360,23 @@ mod tests {
             .await
             .expect("cross-node request");
         assert_eq!(reply, b"ping-pong");
+    }
+
+    // The FULL CHAIN, exercised end-to-end: `h.arduino()` runs a ce-blueprint plan → ce-onboard
+    // `run_local` → a chain-free node; then a module answers on it and we drive it over the Bus. Proves
+    // blueprint → onboard → node → module comms compose. Spawns a real `ce`, so `#[ignore]`.
+    //   cargo test -p ce-test -- --ignored
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[ignore = "spawns a real `ce` node via ce-onboard; run explicitly with --ignored"]
+    async fn full_chain_blueprint_onboard_then_module_comms() {
+        let mut h = Harness::new();
+        let board = h.arduino("unoq").await.expect("onboard emulated board (blueprint -> onboard)");
+        let _echo = board.responder("test/echo", |p| p);
+        tokio::time::sleep(Duration::from_millis(800)).await;
+        let reply = board
+            .request(&board.node_id, "test/echo", b"chain", 5_000)
+            .await
+            .expect("drive a module on the onboarded board");
+        assert_eq!(reply, b"chain");
     }
 }
