@@ -38,13 +38,22 @@ All nodes drop → killed, data-dirs wiped. No ports to pick, no cleanup to writ
 | `Harness::new()` | A fresh topology. Uses `$CE_BIN` (default `ce` on `PATH`). |
 | `h.node()` | An **isolated** ephemeral node (`--no-economy`, own temp data-dir + free ports, `CE_NO_AUTOBOOTSTRAP=1`). Waits for the API to be live. |
 | `h.peer_of(&seed)` | A second node that **dials `seed` directly** and joins its isolated mesh (no relay, no mDNS). For cross-node T3 comms. |
+| `h.on(On::alias("relay"))` | A handle (`RemoteNode`) to a **real, already-running fleet node**, driven over the mesh from your **local node as controller**. Ships no code; the capability under test must already run there. The interim distributed-testing path (no `fetch-by-CID` needed). Target by id (`On::node`/`On::parse("node:…")`) or wallet alias. |
 | `node.responder(topic, f)` | Run a background module that answers every request on `topic` with `f(payload)` (via `ce_rs::serve`). Drop the returned `Responder` to stop it. |
 | `node.request(to, topic, payload, timeout_ms)` | Drive a directed mesh request; returns the reply bytes. |
+| `remote.request(topic, payload, timeout_ms)` | Drive a request at a `RemoteNode` (the `to` is fixed to that node), routed controller → libp2p → remote. |
+| `remote.reachable()` | Best-effort: is the remote in the controller's atlas right now? Use it to **skip** a fleet-only suite cleanly when there is no fleet in reach. |
 | `node.dial_addr()` | The `/ip4/…/tcp/…/p2p/…` multiaddr another node can `--bootstrap` to. |
 | `h.assert_eventually(cond, timeout)` | Poll a condition until true or timeout (the mesh is async). |
 
 `TestNode` carries `client` (a `ce_rs::CeClient`), `node_id` (the Ed25519 CE identity), `peer_id` (the
-libp2p PeerId), `api`, and `p2p_port`.
+libp2p PeerId), `api`, and `p2p_port`. `RemoteNode` carries the remote `node_id` + the controller client
+(`RemoteNode::via(controller, id)` builds one over any controller — e.g. the relay driving another node).
+
+**`h.on` vs fan-out.** `h.on` targets exactly **one** node. Running a workload across *many* machines
+(`fleet=mine`, `org:x`) is core ce-net **distribution** — a capability every app *consumes*, not something
+a test harness reimplements — so `On`/`h.on` deliberately reject multi-node selectors. When that core
+capability lands, the runner's non-local placement rides it; `h.on` stays the single-node primitive.
 
 ## Writing a comms test in your module's repo
 
@@ -122,7 +131,7 @@ distribution. Today `local` is wired; non-local suites report `SKIP` with the re
 
 ## Roadmap
 
-- `h.on(target)` — a `TestNode` bound to a **real fleet node** over the mesh (drive-remote-nodes mode).
+- ~~`h.on(target)` — a handle bound to a **real fleet node** over the mesh (drive-remote-nodes mode).~~ **Done** (`h.on` / `RemoteNode`).
 - `h.install(app, On::…)` — deploy a ceapp onto a harness node over the mesh (the real install path).
 - `h.arduino(alias)` — attach a **real board** (env-gated via `ce onboard`); emulated locally today.
 - Wire `where != local` onto the core ce-net distributed-run capability; fold in `ce-ci` sharding.

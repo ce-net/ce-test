@@ -75,9 +75,12 @@ ce-test run --tier T3 --on fleet=mine   # (design) run across the fleet — no m
 ```
 
 **API surface:** `h.node()` (isolated node), `h.peer_of(seed)` (a second node dialing it over real
-libp2p), `h.arduino(alias)` (a board — emulated in CI, real via `ce onboard`), `node.responder(topic,f)`,
-`node.request(to,topic,payload,timeout)`, `h.assert_eventually(cond,timeout)`. Everything tears down on
-drop.
+libp2p), `h.arduino(alias)` (a board — emulated in CI, real via `ce onboard`), `h.on(On::alias("relay"))`
+(a `RemoteNode` handle to a **real, already-running fleet node** driven over the mesh from your local
+node as controller — ships no code; single-node only, since fan-out is core ce-net distribution the
+harness consumes), `node.responder(topic,f)`, `node.request(to,topic,payload,timeout)`,
+`remote.request(topic,payload,timeout)` / `remote.reachable()`, `h.assert_eventually(cond,timeout)`.
+Everything the harness *spawned* tears down on drop; `h.on` spawns nothing, so it owns no lifetime.
 
 ---
 

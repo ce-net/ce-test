@@ -39,9 +39,13 @@ Run it: `CE_BIN=$(command -v ce) cargo test -p your-app --test comms -- --ignore
 
 ## API
 `Harness::new()`; `h.node()` (isolated node), `h.peer_of(seed)` (2nd node dialing it over real libp2p —
-cross-node), `h.arduino(alias)` (a board; emulated locally, real via `ce onboard`), `node.responder(
-topic, f)`, `node.request(to, topic, payload, timeout_ms)`, `h.assert_eventually(cond, timeout)`. All
-teardown on drop. Node-spawning tests are `#[ignore]`.
+cross-node), `h.arduino(alias)` (a board; emulated locally, real via `ce onboard`), `h.on(On::alias(
+"relay"))` (a `RemoteNode` handle to a **real, already-running fleet node** driven over the mesh from your
+local node as controller — ships no code; the capability must already run there; single-node only, since
+fan-out is core ce-net distribution the harness *consumes*), `node.responder(topic, f)`, `node.request(
+to, topic, payload, timeout_ms)`, `remote.request(topic, payload, timeout_ms)` / `remote.reachable()`,
+`h.assert_eventually(cond, timeout)`. The harness tears down everything it *spawned* on drop (`h.on`
+spawns nothing). Node-spawning + fleet tests are `#[ignore]` and skip cleanly with no fleet in reach.
 
 ## The CLI + cetest.toml
 A repo-root `cetest.toml` catalogs suites; `ce-test [run|list] [--suite|--tier|--on]` runs them.

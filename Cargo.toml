@@ -23,6 +23,8 @@ toml = "0.8"
 # For reading a seed node's libp2p PeerId off GET /bootstrap (to construct a peer's dial multiaddr).
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde_json = "1"
+# For locating the node data dir (same crate ce-rs uses) to resolve a wallet alias -> full node id.
+directories = "5"
 # NOTE: ce-test is the framework/substrate — it must NOT depend on any ceapp. A real board is brought
 # up by shelling the installed `ce onboard` ceapp over the mesh, not via a Cargo dependency on it.
 
