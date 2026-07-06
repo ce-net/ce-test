@@ -9,10 +9,17 @@ license = "AGPL-3.0-only"
 name = "ce_test"
 path = "src/lib.rs"
 
+# The `ce-test` CLI (the runner): reads cetest.toml and runs a ceapp's suites (local now, distributed next).
+[[bin]]
+name = "ce-test"
+path = "src/main.rs"
+
 [dependencies]
 ce-rs = { git = "https://github.com/ce-net/ce-rs", features = ["serve"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "net", "sync"] }
 anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
 # For reading a seed node's libp2p PeerId off GET /bootstrap (to construct a peer's dial multiaddr).
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde_json = "1"

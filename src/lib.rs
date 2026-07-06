@@ -33,6 +33,9 @@ use ce_rs::serve::{serve, Handler, Request};
 use ce_rs::CeClient;
 use tokio::sync::oneshot;
 
+pub mod config;
+pub mod runner;
+
 /// A test topology: spawns nodes and owns their lifetimes (killed + wiped on drop).
 pub struct Harness {
     guards: Vec<NodeGuard>,
