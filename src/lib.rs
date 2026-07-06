@@ -1,4 +1,4 @@
-//! ce-test — the CE testing **framework/API** (`PLAN/ce-testing-framework.md`).
+//! ce-test — the CE testing **framework/API** (guide: `GUIDE.md`; API + CLI: `README.md`).
 //!
 //! This crate is JUST the substrate: an SDK any ceapp adds as a dev-dependency to write tests — like
 //! `cargo test`, but the nodes are real and can be spread across many machines. It spins ephemeral,

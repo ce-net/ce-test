@@ -5,7 +5,9 @@ three tiers that matter (not e2e for every line). `ce-test` spins ephemeral, **c
 (`--no-economy`) `ce` nodes, runs your modules on them, drives real mesh request/reply between them,
 lets you assert, and tears everything down automatically.
 
-This is the foundation of `ce test` (design: `PLAN/ce-testing-framework.md`).
+`ce-test` is the framework/API + CLI **only** — the actual tests live in the ceapps that use it. See
+**[GUIDE.md](./GUIDE.md)** for the full guide: the mental model, how to expand and build on it, and five
+things this makes possible that traditional systems can't.
 
 ## What it gives you
 
@@ -72,13 +74,44 @@ async fn my_module_answers_over_the_mesh() {
 
 ## Running
 
+A suite in your ceapp is a normal `cargo test`:
+
 ```bash
-cargo test -p ce-test -- --ignored --nocapture   # the harness's own demo suites
-CE_BIN=/path/to/ce cargo test -- --ignored        # pin a specific `ce` binary
+CE_BIN=$(command -v ce) cargo test -p your-app --test comms -- --ignored
 ```
 
 Tests that spawn a real node are `#[ignore]` by default so `cargo test` stays hermetic — run them
 explicitly with `--ignored`. Nodes come up in ~1s; a full 2-node comms round-trip runs in ~2s.
+
+## The CLI + `cetest.toml`
+
+`ce-test` also ships a runner. A `cetest.toml` catalogs the suites (each an actual test in a ceapp using
+this API); `ce-test` runs them and reports.
+
+```toml
+[defaults]
+ignored = true       # node-spawning suites are #[ignore]
+dev_link = true      # run tools/ce-dev-link first (resolve cross-repo WIP deps)
+
+[[suite]]
+name = "my-comms"
+tier = "T3"
+path = "your-app"    # repo dir, relative to this file
+test = "comms"       # cargo test --test comms
+features = "serve"   # optional
+where = "local"      # local now; fleet | org:x | node:<id> | relay (placement — no machine names)
+```
+
+```bash
+ce-test list                          # the catalog
+ce-test run                           # all suites, report PASS/FAIL/SKIP
+ce-test run --suite my-comms          # one suite
+ce-test run --tier T3 --on fleet=mine # a tier, across the fleet (distributed exec: see GUIDE §7)
+```
+
+Placement is **declared** (`where` / `--on`), never coded — you never name a machine. `where != local`
+runs over the mesh via the core ce-net distributed-run capability; `ce-test` does not build its own
+distribution. Today `local` is wired; non-local suites report `SKIP` with the reason.
 
 ## Notes / gotchas
 
@@ -89,6 +122,11 @@ explicitly with `--ignored`. Nodes come up in ~1s; a full 2-node comms round-tri
 
 ## Roadmap
 
+- `h.on(target)` — a `TestNode` bound to a **real fleet node** over the mesh (drive-remote-nodes mode).
 - `h.install(app, On::…)` — deploy a ceapp onto a harness node over the mesh (the real install path).
-- `h.arduino(alias)` — bring a **real board** into a test topology, with an emulated-board fallback for CI.
-- `#[ce_test::test]` proc-macro + a `ce test` CLI ceapp (folding in `e2e/` + `integration/` + `ce-ci/`).
+- `h.arduino(alias)` — attach a **real board** (env-gated via `ce onboard`); emulated locally today.
+- Wire `where != local` onto the core ce-net distributed-run capability; fold in `ce-ci` sharding.
+- `#[ce_test::test]` proc-macro + the `@ce-net/test` TS mirror.
+
+See **[GUIDE.md](./GUIDE.md)** §7 for the full state & roadmap and why distribution is substrate work
+`ce-test` *calls*, not something it builds.
