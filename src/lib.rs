@@ -300,6 +300,25 @@ impl RemoteNode {
         RemoteNode { controller, node_id: node_id.into() }
     }
 
+    /// Install a published ceapp on this remote node over the mesh — the SAME cap-gated verb the CLI's
+    /// `ce app install <app> --on node=<id>` uses, driven programmatically from the controller (via
+    /// `CeClient::mesh_app_install`). Returns the installed `(app, version)`. Pair it with
+    /// [`request`](Self::request) to drive the just-installed capability: the **install→drive loop**,
+    /// end to end over the mesh, using the one app system (see the CE `app-system.md` doc).
+    ///
+    /// `registry` is the blob/registry origin the target resolves the manifest + artifacts from;
+    /// `grant` is the capability authorizing the install (`None` to rely on a capability the controller
+    /// node already holds for the target). Authorization is the node's — a caller without a granting
+    /// capability is rejected by the target, identical to the CLI.
+    pub async fn install(
+        &self,
+        app: &str,
+        registry: &str,
+        grant: Option<&str>,
+    ) -> Result<ce_rs::AppInstalled> {
+        self.controller.mesh_app_install(&self.node_id, app, registry, grant).await
+    }
+
     /// Drive a directed mesh request at this remote node on `topic`; returns the reply bytes.
     /// Routed local-controller → libp2p → remote. The remote must already run a responder on `topic`
     /// (this ships no code); errors on timeout / unreachable / no responder.

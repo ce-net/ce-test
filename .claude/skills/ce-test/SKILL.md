@@ -43,7 +43,9 @@ cross-node), `h.arduino(alias)` (a board; emulated locally, real via `ce onboard
 "relay"))` (a `RemoteNode` handle to a **real, already-running fleet node** driven over the mesh from your
 local node as controller — ships no code; the capability must already run there; single-node only, since
 fan-out is core ce-net distribution the harness *consumes*), `node.responder(topic, f)`, `node.request(
-to, topic, payload, timeout_ms)`, `remote.request(topic, payload, timeout_ms)` / `remote.reachable()`,
+to, topic, payload, timeout_ms)`, `remote.install(app, registry, grant)` (install a ceapp on the remote
+over the mesh — the CLI's own cap-gated `mesh_app_install`; pair with request for the install→drive loop),
+`remote.request(topic, payload, timeout_ms)` / `remote.reachable()`,
 `h.assert_eventually(cond, timeout)`. The harness tears down everything it *spawned* on drop (`h.on`
 spawns nothing). Node-spawning + fleet tests are `#[ignore]` and skip cleanly with no fleet in reach.
 

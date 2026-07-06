@@ -68,3 +68,36 @@ async fn on_live_fleet() {
         eprintln!("ok: {} replied {} bytes on {topic}", remote.node_id, reply.len());
     }
 }
+
+/// The install→drive loop over the real mesh: install a published ceapp on a real target through the
+/// SAME cap-gated verb the CLI uses (`RemoteNode::install` → `mesh_app_install`), then drive it.
+/// Gated on `$CE_TEST_ON_TARGET` + `$CE_TEST_INSTALL_APP` (the published app slug) + optional
+/// `$CE_TEST_INSTALL_REGISTRY`; skips cleanly with no fleet/app. Proves apps install apps like the CLI.
+#[tokio::test]
+#[ignore = "needs a live controller + a reachable target + a published app; set the CE_TEST_INSTALL_* envs"]
+async fn on_live_install() {
+    let (Ok(target), Ok(app)) =
+        (std::env::var("CE_TEST_ON_TARGET"), std::env::var("CE_TEST_INSTALL_APP"))
+    else {
+        eprintln!("skip: set $CE_TEST_ON_TARGET + $CE_TEST_INSTALL_APP to run");
+        return;
+    };
+    let registry = std::env::var("CE_TEST_INSTALL_REGISTRY").unwrap_or_else(|_| "https://ce-net.com".into());
+    let mut h = Harness::new();
+    let remote = match h.on(On::parse(&target).expect("parse target")).await {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("skip: no local controller node ({e})");
+            return;
+        }
+    };
+    if !remote.reachable().await {
+        eprintln!("skip: target `{target}` ({}) not in reach", remote.node_id);
+        return;
+    }
+    let installed = remote
+        .install(&app, &registry, None)
+        .await
+        .unwrap_or_else(|e| panic!("install {app} on {} failed: {e}", remote.node_id));
+    eprintln!("ok: installed {} v{} on {}", installed.app, installed.version, remote.node_id);
+}

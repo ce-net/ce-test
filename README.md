@@ -41,6 +41,7 @@ All nodes drop → killed, data-dirs wiped. No ports to pick, no cleanup to writ
 | `h.on(On::alias("relay"))` | A handle (`RemoteNode`) to a **real, already-running fleet node**, driven over the mesh from your **local node as controller**. Ships no code; the capability under test must already run there. The interim distributed-testing path (no `fetch-by-CID` needed). Target by id (`On::node`/`On::parse("node:…")`) or wallet alias. |
 | `node.responder(topic, f)` | Run a background module that answers every request on `topic` with `f(payload)` (via `ce_rs::serve`). Drop the returned `Responder` to stop it. |
 | `node.request(to, topic, payload, timeout_ms)` | Drive a directed mesh request; returns the reply bytes. |
+| `remote.install(app, registry, grant)` | Install a published ceapp on the remote node over the mesh — the SAME cap-gated verb as `ce app install <app> --on node=<id>` (via `mesh_app_install`). Pair with `request` for the **install→drive loop**. |
 | `remote.request(topic, payload, timeout_ms)` | Drive a request at a `RemoteNode` (the `to` is fixed to that node), routed controller → libp2p → remote. |
 | `remote.reachable()` | Best-effort: is the remote in the controller's atlas right now? Use it to **skip** a fleet-only suite cleanly when there is no fleet in reach. |
 | `node.dial_addr()` | The `/ip4/…/tcp/…/p2p/…` multiaddr another node can `--bootstrap` to. |
@@ -148,7 +149,7 @@ release time; a local install wants a `cargo build --release` first.)
 ## Roadmap
 
 - ~~`h.on(target)` — a handle bound to a **real fleet node** over the mesh (drive-remote-nodes mode).~~ **Done** (`h.on` / `RemoteNode`).
-- `h.install(app, On::…)` — deploy a ceapp onto a harness node over the mesh (the real install path).
+- ~~`h.install(app, …)` — install a ceapp onto a node over the mesh (the real install path).~~ **Done** (`RemoteNode::install` → the CLI's own cap-gated `mesh_app_install`; install→drive loop).
 - `h.arduino(alias)` — attach a **real board** (env-gated via `ce onboard`); emulated locally today.
 - Wire `where != local` onto the core ce-net distributed-run capability; fold in `ce-ci` sharding.
 - `#[ce_test::test]` proc-macro + the `@ce-net/test` TS mirror.
