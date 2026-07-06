@@ -1,0 +1,25 @@
+[app]
+name = "ce-test"
+version = "0.1.0"
+summary = "The CE testing framework + runner: spins ephemeral chain-free nodes, drives module<->module mesh comms, drives a real fleet node over the mesh (h.on), and runs a ceapp's suite catalog (cetest.toml). Install once through the one app system; `ce test` runs a ceapp's suites local or across the fleet."
+runtime = "native"
+provides = ["test"]
+
+[native]
+bin = "ce-test"
+
+# Runs on the host: it SPAWNS real `ce` nodes (ephemeral, `--no-economy`), shells `cargo test` for the
+# ceapp suites under test, and drives the local node's API/mesh. It is a run-to-completion CLI, not a
+# network service — it opens no listening socket of its own.
+[sandbox]
+tier = "none"
+
+[deps]
+capabilities = []
+requires = ["native"]
+
+# Not a daemon: `ce-test run|list` runs to completion; the supervisor must not keep it alive.
+[daemon]
+enabled = false
+
+# [native.artifacts] per-(os,arch) sha256 digests are filled by ce-publish at release time.

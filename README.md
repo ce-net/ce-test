@@ -129,6 +129,15 @@ Placement is **declared** (`where` / `--on`), never coded — you never name a m
 runs over the mesh via the core ce-net distributed-run capability; `ce-test` does not build its own
 distribution. Today `local` is wired; non-local suites report `SKIP` with the reason.
 
+### Installed through the one app system
+
+`ce-test` ships a `ceapp.toml`, so it is installed like every other capability — through the one
+cap-gated app system, not as a bespoke standalone binary (`ce app install ce-test`; `--on <target>` to
+place it on a fleet node). It runs to completion (not a daemon) and provides the `test` capability, so a
+future `ce test` routes to it identically local or across the mesh. This is the anti-sprawl rule applied
+to dev tooling: the test runner is a ceapp like anything else. (Artifacts are filled by `ce-publish` at
+release time; a local install wants a `cargo build --release` first.)
+
 ## Notes / gotchas
 
 - `--data-dir` is a **global** `ce` flag (before `start`); `--api-port`/`--port` are `start` flags. The
