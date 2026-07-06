@@ -1,13 +1,16 @@
-//! ce-test — the CE testing harness (`PLAN/ce-testing-framework.md`).
+//! ce-test — the CE testing **framework/API** (`PLAN/ce-testing-framework.md`).
 //!
-//! Spin ephemeral, **chain-free** (`--no-economy`) nodes, run modules on them, drive **direct
-//! module↔module** communication over the mesh, assert, and tear down automatically. This is the
-//! foundation of `ce test`. Three topologies today: co-located modules over one node's Bus
-//! (`h.node()`, the self-request path — deterministic, no peering), **cross-node over real libp2p**
-//! (`h.peer_of(seed)` dials the seed directly; no relay, no mDNS), and a **board** brought up through
-//! the real onboard path (`h.arduino(alias)` — `ce_onboard::run_local`, i.e. a `ce-blueprint` plan →
-//! `ce-onboard` → a chain-free node; emulated locally, env-gated for real hardware). Next: `ce app
-//! install` in the harness.
+//! This crate is JUST the substrate: an SDK any ceapp adds as a dev-dependency to write tests — like
+//! `cargo test`, but the nodes are real and can be spread across many machines. It spins ephemeral,
+//! **chain-free** (`--no-economy`) nodes, runs modules on them, drives **direct module↔module**
+//! communication over the mesh, asserts, and tears everything down. **The actual tests live in the
+//! ceapps that use this API, never here** (see `ce-conntest`'s `tests/comms.rs` for the pattern).
+//!
+//! Topologies: `h.node()` (an isolated node — the co-located self-request path), `h.peer_of(seed)`
+//! (a second node dialing the seed directly over real libp2p — cross-node), and `h.arduino(alias)`
+//! (a board — emulated as a local node in CI; a real board attaches via the installed `ce onboard`
+//! ceapp, env-gated). Next: `ce app install` in the harness + the distributed `ce test` runner
+//! (fold in `ce-ci`) so one command runs a ceapp's suites across the fleet.
 //!
 //! ```no_run
 //! # async fn demo() -> anyhow::Result<()> {
@@ -99,7 +102,7 @@ impl Harness {
             .spawn()
             .with_context(|| format!("spawn `{}` (set $CE_BIN?)", self.ce_bin))?;
 
-        self.guards.push(NodeGuard { proc: Proc::Child(child), data_dir: data_dir.clone() });
+        self.guards.push(NodeGuard { child, data_dir: data_dir.clone() });
 
         let api = format!("http://127.0.0.1:{api_port}");
         let token = wait_for_token(&data_dir).await.context("node never wrote api.token")?;
@@ -110,44 +113,14 @@ impl Harness {
         Ok(TestNode { client, node_id, api, peer_id, p2p_port })
     }
 
-    /// Bring a **board** into the topology and return a handle to it. Real hardware is env-gated (a
-    /// future `CE_TEST_ARDUINO_<ALIAS>` naming a reachable node); by default — and in CI — this is an
-    /// **emulated board**: a local chain-free node brought up THROUGH the real `ce-onboard` path
-    /// (`ce_onboard::run_local`, which itself runs a `ce-blueprint` plan). So the whole chain —
-    /// blueprint → onboard → node → module comms — is exercised without hardware.
-    pub async fn arduino(&mut self, alias: &str) -> Result<TestNode> {
-        let idx = self.guards.len();
-        let data_dir = std::env::temp_dir().join(format!("ce-test-arduino-{}-{idx}-{alias}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&data_dir);
-        let api_port = free_port()?;
-        let p2p_port = free_port()?;
-
-        // Describe the emulated board as a Hosted target (the emulator runs the native binary), and
-        // onboard it through ce-onboard — the same code path a real Hosted board takes.
-        let desc: ce_blueprint::TargetDescriptor = serde_json::from_str(&format!(
-            r#"{{"name":"emulated-{alias}","arch":"native","has_os":true,"has_crypto":true}}"#
-        ))
-        .expect("valid emulated descriptor");
-        let opts = ce_onboard::OnboardOpts {
-            via: Some(ce_onboard::Via::Local),
-            org: None,
-            data_dir: Some(data_dir.to_string_lossy().into_owned()),
-        };
-        let out = ce_onboard::run_local(&self.ce_bin, &desc, &opts, api_port, p2p_port)
-            .await
-            .context("onboard emulated board via ce-onboard")?;
-
-        // ce-onboard leaves the node running and hands us its pid — own its lifetime.
-        self.guards.push(NodeGuard { proc: Proc::Pid(out.pid), data_dir: out.data_dir.clone() });
-
-        let api = format!("http://127.0.0.1:{api_port}");
-        let token = std::fs::read_to_string(out.data_dir.join("api.token"))
-            .context("read api.token of onboarded board")?
-            .trim()
-            .to_string();
-        let client = CeClient::with_token(api.clone(), Some(token.clone()));
-        let peer_id = fetch_peer_id(&api, &token).await.context("read peer id from /bootstrap")?;
-        Ok(TestNode { client, node_id: out.node_id, api, peer_id, p2p_port })
+    /// Bring a **board** into the topology and return a handle to it. Real hardware is env-gated
+    /// (`CE_TEST_ARDUINO_<ALIAS>` naming a reachable node, stood up via the installed `ce onboard`
+    /// ceapp — shelled over the mesh, NOT a Cargo dependency: the framework must not depend on apps).
+    /// By default — and in CI — this is an **emulated board**: a local chain-free node standing in for
+    /// the board, so board-shaped tests run hardware-free.
+    pub async fn arduino(&mut self, _alias: &str) -> Result<TestNode> {
+        // Emulated board == a local chain-free node. (A real board attaches via `ce onboard`, env-gated.)
+        self.spawn(None).await
     }
 
     /// Poll `cond` every 100ms until it is true or `timeout` elapses.
@@ -236,30 +209,16 @@ impl Handler for FnHandler {
     }
 }
 
-/// A node this harness owns, killed on drop. Either a `Child` we spawned directly (`h.node()`/
-/// `peer_of()`), or a pid of a node brought up through `ce-onboard` (`h.arduino()`, which leaves the
-/// node running and hands us its pid).
-enum Proc {
-    Child(Child),
-    Pid(u32),
-}
-
+/// A node this harness spawned, killed + wiped on drop.
 struct NodeGuard {
-    proc: Proc,
+    child: Child,
     data_dir: PathBuf,
 }
 
 impl Drop for NodeGuard {
     fn drop(&mut self) {
-        match &mut self.proc {
-            Proc::Child(c) => {
-                let _ = c.kill();
-                let _ = c.wait();
-            }
-            Proc::Pid(p) => {
-                let _ = std::process::Command::new("kill").arg(p.to_string()).status();
-            }
-        }
+        let _ = self.child.kill();
+        let _ = self.child.wait();
         let _ = std::fs::remove_dir_all(&self.data_dir);
     }
 }
@@ -312,71 +271,4 @@ async fn wait_for_health(client: &CeClient) -> Result<()> {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     Err(anyhow!("node API not healthy"))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // T3 (module↔module comms): a module answers on a topic, another drives it over the node's Bus,
-    // the reply comes back. The co-located self-request path — deterministic, no peering. Needs `ce`
-    // on PATH (or $CE_BIN); ignored by default so `cargo test` stays hermetic. Run with:
-    //   cargo test -p ce-test -- --ignored
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    #[ignore = "spawns a real `ce` node; run explicitly with --ignored"]
-    async fn module_to_module_echo_over_the_bus() {
-        let mut h = Harness::new();
-        let node = h.node().await.expect("ephemeral node");
-        let _echo = node.responder("test/echo", |p| p); // module B: echo
-        // give the serve loop a moment to subscribe
-        tokio::time::sleep(Duration::from_millis(800)).await;
-        // module A drives B over the Bus and gets the reply back:
-        let reply = node
-            .request(&node.node_id, "test/echo", b"round-trip", 5_000)
-            .await
-            .expect("request");
-        assert_eq!(reply, b"round-trip");
-    }
-
-    // T3 (cross-node module↔module): module B runs on node `dev`, module A on node `hub` drives it
-    // over REAL libp2p (hub dials dev directly, no relay, no mDNS). This is the transparency invariant
-    // across the wire — the same `request`/`responder` code as the co-located case, now over the mesh.
-    //   cargo test -p ce-test -- --ignored
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    #[ignore = "spawns two real `ce` nodes; run explicitly with --ignored"]
-    async fn cross_node_request_over_the_mesh() {
-        let mut h = Harness::new();
-        let dev = h.node().await.expect("seed node");
-        let hub = h.peer_of(&dev).await.expect("peer node dialing the seed");
-        let _echo = dev.responder("test/echo", |mut p| {
-            p.extend_from_slice(b"-pong");
-            p
-        });
-        // let the direct connection settle + the serve loop subscribe on `dev`.
-        tokio::time::sleep(Duration::from_millis(1500)).await;
-        // module A (on hub) drives module B (on dev) across the wire, addressed by dev's node_id:
-        let reply = hub
-            .request(&dev.node_id, "test/echo", b"ping", 10_000)
-            .await
-            .expect("cross-node request");
-        assert_eq!(reply, b"ping-pong");
-    }
-
-    // The FULL CHAIN, exercised end-to-end: `h.arduino()` runs a ce-blueprint plan → ce-onboard
-    // `run_local` → a chain-free node; then a module answers on it and we drive it over the Bus. Proves
-    // blueprint → onboard → node → module comms compose. Spawns a real `ce`, so `#[ignore]`.
-    //   cargo test -p ce-test -- --ignored
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    #[ignore = "spawns a real `ce` node via ce-onboard; run explicitly with --ignored"]
-    async fn full_chain_blueprint_onboard_then_module_comms() {
-        let mut h = Harness::new();
-        let board = h.arduino("unoq").await.expect("onboard emulated board (blueprint -> onboard)");
-        let _echo = board.responder("test/echo", |p| p);
-        tokio::time::sleep(Duration::from_millis(800)).await;
-        let reply = board
-            .request(&board.node_id, "test/echo", b"chain", 5_000)
-            .await
-            .expect("drive a module on the onboarded board");
-        assert_eq!(reply, b"chain");
-    }
 }
