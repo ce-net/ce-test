@@ -49,6 +49,43 @@ over the mesh — the CLI's own cap-gated `mesh_app_install`; pair with request 
 `h.assert_eventually(cond, timeout)`. The harness tears down everything it *spawned* on drop (`h.on`
 spawns nothing). Node-spawning + fleet tests are `#[ignore]` and skip cleanly with no fleet in reach.
 
+## Multi-node & replicated-state tests (the recipe)
+
+Two real nodes over real libp2p: `let a = h.node().await?; let b = h.peer_of(&a).await?;` — `b` dials
+`a` on loopback, an isolated 2-node mesh. To test **replicated state** (`ce-coord` `Merged`/
+`Replicated`, or any app on it) converging across them, bridge each node's public `CeClient`
+(`TestNode.client`, Clone) into ce-coord:
+
+```rust
+let a = h.node().await?;
+let b = h.peer_of(&a).await?;                                   // 2nd node dialing A
+let coord_a = Coord::with_client(a.client.clone()).await?;      // ce-coord bound to node A
+let coord_b = Coord::with_client(b.client.clone()).await?;
+let app_a = MyClient::open(&coord_a, std::slice::from_ref(&b.node_id)).await?;  // each follows the other
+let app_b = MyClient::open(&coord_b, std::slice::from_ref(&a.node_id)).await?;
+app_a.write(/* … */).await?;
+h.assert_eventually(|| { app_b.refresh(); app_b.read() == expected }, Duration::from_secs(20)).await?;
+```
+
+- **Drive the REAL app code.** If the state machine/client lives in a `[[bin]]`, extract it to the
+  crate's `lib.rs` so the test imports it (ce-sticky did exactly this: bin → lib+bin). A test that
+  re-declares the ops proves nothing about the app.
+- **Prove non-vacuity (mandatory).** A fast green can lie. Run a negative control that MUST fail —
+  open the follower with NO peers (`&[]`) and assert the same `assert_eventually` TIMES OUT.
+  (ce-screen: with peering it converges in ~0.5s; with none it times out at 20s.)
+- **`assert_eventually`, never a fixed sleep.** ce-coord folds peer ops on `read`/`pull`, so call
+  `refresh()`/`pull()` inside the condition closure.
+- **ce-coord multi-writer LWW needs a TRUE Lamport clock**, not a wall-clock seed:
+  `next_key = max(local, max_observed_lamport) + 1` (track `max_lamport` in the MergeMachine's fold),
+  so a write that observed another always outranks it — else convergence is skew-dependent.
+- Exemplars: `ce-screen/tests/convergence.rs`, `ce-sticky/tests/convergence.rs`.
+
+Note on **local single-node self-request** (`node.request(&node.node_id, …)` to a `node.responder`
+on the same node): treat it as best-effort — it was observed to time out against a long-running local
+node. For a LOCAL client↔daemon on one machine, prefer a **loopback socket** (unix domain), not a
+mesh self-call; cross-DEVICE requests (the two-node recipe above) are the solid path. (See
+`ce-screen/tests/self_delivery.rs`, which probes this directly.)
+
 ## The CLI + cetest.toml
 A repo-root `cetest.toml` catalogs suites; `ce-test [run|list] [--suite|--tier|--on] [--json]` runs them.
 `--json` emits machine-readable results (`{suites,summary}`) on a pure-JSON stdout for CI (gate on
