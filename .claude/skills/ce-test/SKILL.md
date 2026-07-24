@@ -81,10 +81,12 @@ h.assert_eventually(|| { app_b.refresh(); app_b.read() == expected }, Duration::
 - Exemplars: `ce-screen/tests/convergence.rs`, `ce-sticky/tests/convergence.rs`.
 
 Note on **local single-node self-request** (`node.request(&node.node_id, …)` to a `node.responder`
-on the same node): treat it as best-effort — it was observed to time out against a long-running local
-node. For a LOCAL client↔daemon on one machine, prefer a **loopback socket** (unix domain), not a
-mesh self-call; cross-DEVICE requests (the two-node recipe above) are the solid path. (See
-`ce-screen/tests/self_delivery.rs`, which probes this directly.)
+on the same node): this WORKS on a fresh current-binary node (verified —
+`ce-screen/tests/self_delivery.rs` passes). A timeout usually means the target node is a STALE binary
+(the always-on mac node on :8844 was, and 504'd) — `ce update` it. Separately, a fresh CLI process
+still can't just open a shared `ce-coord` log to reach a stateful daemon (that would be a second
+writer of one log); the daemon owns the log and clients reach it via a loopback socket OR a mesh
+self-call (both work) — see `ce-net-coding`.
 
 ## The CLI + cetest.toml
 A repo-root `cetest.toml` catalogs suites; `ce-test [run|list] [--suite|--tier|--on] [--json]` runs them.
