@@ -2,7 +2,7 @@
 name = "ce-test"
 version = "0.1.0"
 edition = "2021"
-description = "The CE testing harness: spin ephemeral chain-free nodes, run modules, drive direct module<->module mesh communication, assert, and tear down — the foundation of `ce test` (PLAN/ce-testing-framework.md)."
+description = "The CE testing harness: spin ephemeral chain-free nodes, run modules, drive direct module<->module mesh communication, assert, and tear down — the foundation of `ce test`."
 license = "AGPL-3.0-only"
 
 [lib]
